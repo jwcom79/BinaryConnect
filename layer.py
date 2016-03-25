@@ -18,12 +18,12 @@
 import gzip
 import cPickle
 import numpy as np
-import os 
+import os
 import os.path
 import sys
-import theano 
+import theano
 import theano.tensor as T
-import theano.printing as P 
+import theano.printing as P
 from theano import pp
 import time
 import scipy.stats
@@ -34,15 +34,15 @@ import scipy.stats
 # from pylearn2.sandbox.cuda_convnet.pool import MaxPool
 
 class linear_layer(object):
-    
+
     def __init__(self, rng, n_inputs, n_units,
         BN=False, BN_epsilon=1e-4,
         dropout=1.,
         binary_training=False, stochastic_training=False,
         binary_test=False, stochastic_test=0):
-        
+
         self.rng = rng
-        
+
         self.n_units = n_units
         print "        n_units = "+str(n_units)
         self.n_inputs = n_inputs
@@ -53,41 +53,42 @@ class linear_layer(object):
         print "        BN_epsilon = "+str(BN_epsilon)
         self.dropout = dropout
         print "        dropout = "+str(dropout)
-        
+
+
         self.binary_training = binary_training
         print "        binary_training = "+str(binary_training)
         self.stochastic_training = stochastic_training
-        print "        stochastic_training = "+str(stochastic_training)     
+        print "        stochastic_training = "+str(stochastic_training)
         self.binary_test = binary_test
         print "        binary_test = "+str(binary_test)
         self.stochastic_test = stochastic_test
-        print "        stochastic_test = "+str(stochastic_test)     
-        
+        print "        stochastic_test = "+str(stochastic_test)
+
         self.high = np.float32(np.sqrt(6. / (n_inputs + n_units)))
         self.W0 = np.float32(self.high/2)
-        
+
         W_values = np.asarray(self.rng.uniform(low=-self.high,high=self.high,size=(n_inputs, n_units)),dtype=theano.config.floatX)
-        b_values = np.zeros((n_units), dtype=theano.config.floatX)        
+        b_values = np.zeros((n_units), dtype=theano.config.floatX)
         a_values = np.ones((n_units), dtype=theano.config.floatX)
-        
+
         # creation of shared symbolic variables
         # shared variables are the state of the built function
         # in practice, we put them in the GPU memory
         self.W = theano.shared(value=W_values, name='W')
         self.b = theano.shared(value=b_values, name='b')
         self.a = theano.shared(value=a_values, name='a')
-        
+
         self.mean = theano.shared(value=b_values, name='mean')
         self.var = theano.shared(value=b_values, name='var')
         self.n_samples = theano.shared(value=np.float32(0),name='n_samples')
-        
+
         # momentum
         self.update_W = theano.shared(value=np.zeros((n_inputs, n_units), dtype=theano.config.floatX), name='update_W')
         self.update_b = theano.shared(value=b_values, name='update_b')
-    
+
     def activation(self, z):
         return z
-    
+
     def hard_sigm(self,x):
         return T.clip((x+1)/2, 0, 1)
 
@@ -95,14 +96,14 @@ class linear_layer(object):
         return T.clip(T.abs_(x), 0, 1)
 
     def binarize_weights(self,W,eval):
-        
+
         binary_deterministic_training = (self.binary_training == True) and (self.stochastic_training == False)
         binary_stochastic_training = (self.binary_training == True) and (self.stochastic_training == True)
         binary_deterministic_test = (self.binary_test == True) and (self.stochastic_test == False)
-        binary_stochastic_test = (self.binary_test == True) and (self.stochastic_test == True)       
+        binary_stochastic_test = (self.binary_test == True) and (self.stochastic_test == True)
         binary_deterministic = ((binary_deterministic_training == True) and (eval==False)) or ((binary_deterministic_test==True) and (eval==True))
         binary_stochastic = ((binary_stochastic_training == True) and (eval==False)) or ((binary_stochastic_test==True) and (eval==True))
-        
+
         # print "        binary_training = "+str(self.binary_training)
         # print "        stochastic_training = "+str(self.stochastic_training)
         # print "        binary_test = "+str(self.binary_test)
@@ -110,7 +111,7 @@ class linear_layer(object):
         # print "        eval = "+str(eval)
         # print "        binary_deterministic = "+str(binary_deterministic)
         # print "        binary_stochastic = "+str(binary_stochastic)
-        
+
         # Binary weights
         if binary_deterministic == True:
             larger_than_neg_0_5 = T.gt(W, -0.5)
@@ -123,49 +124,49 @@ class linear_layer(object):
             p = self.clipped_v(W / self.W0)
             srng = theano.sandbox.rng_mrg.MRG_RandomStreams(self.rng.randint(999999))
             Wb = self.W0 * w_sign * T.cast(srng.binomial(n=1, p=p, size=T.shape(W)), theano.config.floatX)
-            
+
         else:  # continuous weights
             Wb = W
-            
+
         return Wb
-    
+
     def fprop(self, x, can_fit, eval):
-        
+
         # shape the input as a matrix (batch_size, n_inputs)
         self.x = x.flatten(2)
-        
+
         # apply dropout mask
         if self.dropout < 1.:
-            
+
             if eval == False:
                 # The cast is important because
                 # int * float32 = float64 which pulls things off the gpu
-                
+
                 # very slow ??
                 # srng = T.shared_randomstreams.RandomStreams(self.rng.randint(999999)) 
-                
+
                 srng = theano.sandbox.rng_mrg.MRG_RandomStreams(self.rng.randint(999999))
                 mask = T.cast(srng.binomial(n=1, p=self.dropout, size=T.shape(self.x)), theano.config.floatX)
-                
+
                 # apply the mask
                 self.x = self.x * mask
             else:
                 self.x = self.x * self.dropout     
-        
+
         # binarize the weights
         self.Wb = self.binarize_weights(self.W,eval)
-        
+
         z = T.dot(self.x, self.Wb)
-        
+
         # for BN updates
         self.z = z
-        
+
         # batch normalization
         if self.BN == True:
-            
+
             self.batch_mean = T.mean(z,axis=0)
             self.batch_var = T.var(z,axis=0)
-            
+
             if can_fit == True:
                 mean = self.batch_mean
                 var = self.batch_var
@@ -173,17 +174,17 @@ class linear_layer(object):
             else:
                 mean = self.mean
                 var = self.var
-        
+
             z = (z - mean)/(T.sqrt(var+self.BN_epsilon))
             z = self.a * z
-        
+
         self.z = z + self.b
-        
+
         # activation function
         y = self.activation(self.z)
-        
+
         return y
-    
+
     def quantized_bprop(self, cost):
         """
         bprop equals:
@@ -212,31 +213,31 @@ class linear_layer(object):
             self.dEda = T.grad(cost=cost, wrt=self.a)
 
     def bprop(self, cost):
-        
+
         if self.binary_training == True:
             dEdWb = T.grad(cost=cost, wrt=self.Wb) 
             self.dEdW = dEdWb
-            
+
         else:
             self.dEdW = T.grad(cost=cost, wrt=self.W)
-        
+
         self.dEdb = T.grad(cost=cost, wrt=self.b)
-        
+
         if self.BN == True:
             self.dEda = T.grad(cost=cost, wrt=self.a)
-        
+
     def parameters_updates(self, LR, M):    
-        
+
         updates = []
 
         # compute updates
         new_update_W = M * self.update_W - LR * self.dEdW
         new_update_b = M * self.update_b - LR * self.dEdb
-        
+
         # compute new parameters. Note that we use a better precision than the other operations
         new_W = self.W + new_update_W
         new_b = self.b + new_update_b
-        
+
         # clip the new weights when using binary weights
         # it is equivalent to doing 2 things:
         # 1) clip the weights during propagations
@@ -245,89 +246,89 @@ class linear_layer(object):
         # if W is equal to -W0, then I can only augment W
         if self.binary_training==True:
             new_W = T.clip(new_W, -self.W0, self.W0)
-        
+
         updates.append((self.W, new_W))
         updates.append((self.b, new_b))
         updates.append((self.update_W, new_update_W))
         updates.append((self.update_b, new_update_b)) 
-        
+
         if self.BN == True:
             new_a = self.a - LR * self.dEda
             updates.append((self.a, new_a))
 
         return updates
-    
+
     def BN_updates(self):
-        
+
         updates = []
-        
+
         # batch_size = T.shape(self.z)[0]
         new_n_samples = self.n_samples + 1
-        
+
         new_mean = (self.n_samples/new_n_samples) * self.mean + (1/new_n_samples) * self.batch_mean
         # very sligthly biased variance estimation
         new_var = (self.n_samples/new_n_samples) * self.var + (1/new_n_samples) * self.batch_var
-        
+
         updates.append((self.n_samples, new_n_samples)) 
         updates.append((self.mean, new_mean))
         updates.append((self.var, new_var))
-        
+
         return updates
-        
+
     def BN_reset(self):
-    
+
         updates = []
-        
+
         updates.append((self.mean, self.mean*0.)) 
         updates.append((self.var, self.var*0.))
         updates.append((self.n_samples, self.n_samples*0.))
-        
+
         return updates
 
 class ReLU_layer(linear_layer):
-    
+
     def activation(self,z):
-    
+
         return T.maximum(0.,z)
 
 class Maxout_layer(linear_layer):
-    
+
     def __init__(self, rng, n_inputs, n_units, n_pieces,
         BN=False, BN_epsilon=1e-4,
         dropout=1.,
         binary_training=False, stochastic_training=False,
         binary_test=False, stochastic_test=0):
-        
+
         linear_layer.__init__(self, rng=rng, n_inputs=n_inputs, 
             n_units = n_units*n_pieces,
             BN=BN, BN_epsilon=BN_epsilon,
             dropout=dropout,
             binary_training=binary_training, stochastic_training=stochastic_training,
             binary_test=binary_test, stochastic_test=stochastic_test)
-            
+
         self.n_pieces = n_pieces
-    
+
     def activation(self,z):
-        
+
         y = T.reshape(z,(T.shape(z)[0], self.n_units//self.n_pieces, self.n_pieces))
 
         y = T.max(y,axis=2)
-        
+
         y = T.reshape(y,(T.shape(z)[0],self.n_units//self.n_pieces))
 
         return y
-        
+
 class conv_layer(linear_layer): 
-    
+
     def __init__(self, rng, 
         # image_shape, 
         filter_shape, pool_shape, pool_stride,
         BN, BN_epsilon=1e-4,
         binary_training=False, stochastic_training=False,
         binary_test=False, stochastic_test=0):
-        
+
         self.rng = rng
-        
+
         # self.image_shape = image_shape
         # print "        image_shape = "+str(image_shape)
         self.filter_shape = filter_shape
@@ -467,24 +468,24 @@ class ReLU_conv_layer(conv_layer):
 
 
 class Maxout_conv_layer(conv_layer):
-    
+
     def __init__(self, rng, 
         filter_shape, pool_shape, pool_stride, n_pieces,
         BN, BN_epsilon=1e-4,
         binary_training=False, stochastic_training=False,
         binary_test=False, stochastic_test=0):
-        
+
         new_filter_shape = (filter_shape[0]*n_pieces,filter_shape[1],filter_shape[2],filter_shape[3])
-        
+
         conv_layer.__init__(self, rng=rng, 
             filter_shape=new_filter_shape, pool_shape=pool_shape, pool_stride=pool_stride,
             BN=BN, BN_epsilon=BN_epsilon,
             binary_training=binary_training, stochastic_training=stochastic_training,
             binary_test=binary_test, stochastic_test=stochastic_test)
-            
+
         self.n_pieces = n_pieces
-    
+
     def activation(self,z):
-        
+
         z = T.reshape(z,(T.shape(z)[0], T.shape(z)[1]//self.n_pieces, self.n_pieces,T.shape(z)[2],T.shape(z)[3]))
         return T.max(z,axis=2)

@@ -21,22 +21,22 @@ import numpy as np
 import os
 import os.path
 import sys
-import theano 
+import theano
 import theano.tensor as T
-import time       
-        
+import time
+
 class Network(object):
-    
-    layer = []                
-    
+
+    layer = []
+
     def __init__(self, n_hidden_layer, BN):
-        
-   
+
+
         self.n_hidden_layers = n_hidden_layer
         print "    n_hidden_layers = "+str(n_hidden_layer)    
         self.BN = BN
         print "    BN = "+str(BN)   
-    
+
     # Monte Carlo averaging
     # So far, I change the weigths at each minibatch, which makes no sense hardware wise.
     # the way it would make sense = sample x set of weights, and use them from A to Z, then monte carlo.
@@ -44,31 +44,29 @@ class Network(object):
     # I should use a shared variable for the binarized weights
     # I should use a shared variable for the output average.
     # I should compute BN mean and var for each of the sampled set of weights
-    
+
     def fprop(self, x, can_fit, eval):
-    
+
         for k in range(self.n_hidden_layers+1):
             x = self.layer[k].fprop(x, can_fit, eval)
-        
+
         return x
 
     # when you use fixed point, you cannot use T.grad directly -> bprop modifications.
     def bprop(self, y, t):
-        
         batch_size = T.cast(T.shape(y)[0], dtype=theano.config.floatX)
-        
         # MSE
         # cost = T.sum(T.sqr(y-t))/batch_size
-        
+
         # squared hinge loss
         cost = T.sum(T.sqr(T.maximum(0.,1.-t*y)))/batch_size
-        
+
         # multi class squared hinge loss
         # cost = T.mean(T.sqr(T.maximum(0.,T.max(1.-t*y,axis=1))))
-        
+
         # hinge loss
         # cost = T.sum(T.maximum(0.,1.-t*y))/batch_size
-        
+
         # bprop
         for k in range(self.n_hidden_layers,-1,-1):
             self.layer[k].bprop(cost)
@@ -80,15 +78,15 @@ class Network(object):
             self.layer[k].quantized_bprop(cost)
 
     def BN_updates(self, can_fit, x):
-        
-        y = self.fprop(x=x, can_fit=can_fit, eval=True) 
-        
+
+        y = self.fprop(x=x, can_fit=can_fit, eval=True)
+
         updates = self.layer[0].BN_updates()
         for k in range(1,self.n_hidden_layers+1):
             updates = updates + self.layer[k].BN_updates()
-        
+
         return updates
-    
+
     def BN_updates_layer(self,layer,x):
         
         y = self.fprop(x=x, can_fit=False,eval=True) 
